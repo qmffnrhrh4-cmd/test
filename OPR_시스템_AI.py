@@ -61,7 +61,9 @@ class GeminiClient:
         """상세한 답안 채점 (AI 기반)"""
 
         if not self.available:
-            return {"error": "Gemini API를 사용할 수 없습니다"}
+            # Fallback - 기본 채점 사용
+            grader = BasicGrader()
+            return grader.grade_answer(student_answer, keywords, forbidden_words)
 
         prompt = f"""당신은 OPR(논술형 시험) 채점 전문가입니다.
 
@@ -83,71 +85,144 @@ class GeminiClient:
    - 보고서 구조 (제목, 1/2/3, □/○/-)
    - 최소 15줄 이상
 
-【필수 키워드】
+【필수 키워드 {len(keywords)}개】
 {', '.join(keywords)}
 
 【금지어】
-{', '.join(forbidden_words)}
+{', '.join(forbidden_words) if forbidden_words else '없음'}
 
 【모범답안】
 {model_answer}
 
 【학생 답안】
-{student_answer}
+{student_answer[:2000]}
 
-다음 JSON 형식으로 상세하게 답변하세요:
+다음 JSON 형식으로 반드시 응답하세요. 다른 텍스트 없이 JSON만 출력하세요:
+
 {{
-  "총점": 숫자,
+  "총점": 75,
   "논리정확성": {{
-    "점수": 숫자,
+    "점수": 32,
     "매칭된_키워드": ["키워드1", "키워드2"],
-    "누락된_키워드": ["키워드3", "키워드4"],
-    "발견된_금지어": ["금지어1"],
-    "잘한_점": ["구체적인 잘한 점 1", "구체적인 잘한 점 2"],
-    "부족한_점": ["구체적인 부족한 점 1"],
-    "피드백": "상세 설명"
+    "누락된_키워드": ["키워드3"],
+    "발견된_금지어": [],
+    "잘한_점": ["구체적으로 어떤 부분이 좋았는지 작성"],
+    "부족한_점": ["구체적으로 어떤 부분이 부족했는지 작성"],
+    "피드백": "전반적인 논리와 정확성에 대한 평가"
   }},
   "명확간결성": {{
     "등급": "A",
-    "점수": 숫자,
-    "잘한_점": ["구체적인 잘한 점"],
-    "부족한_점": ["구체적인 부족한 점"],
-    "개선_방법": ["구체적인 개선 방법 1", "구체적인 개선 방법 2"],
-    "피드백": "상세 설명"
+    "점수": 25,
+    "잘한_점": ["명확하게 작성한 부분"],
+    "부족한_점": ["개선이 필요한 부분"],
+    "개선_방법": ["구체적인 개선 방법"],
+    "피드백": "명확성과 간결성에 대한 평가"
   }},
   "완결성": {{
-    "등급": "A",
-    "점수": 숫자,
-    "잘한_점": ["구체적인 잘한 점"],
-    "부족한_점": ["구체적인 부족한 점"],
+    "등급": "B",
+    "점수": 21,
+    "잘한_점": ["구조적으로 잘 작성한 부분"],
+    "부족한_점": ["보완이 필요한 부분"],
     "개선_방법": ["구체적인 개선 방법"],
-    "피드백": "상세 설명"
+    "피드백": "보고서 완결성에 대한 평가"
   }},
   "종합_평가": {{
-    "강점": ["전체적인 강점 1", "전체적인 강점 2"],
-    "약점": ["전체적인 약점 1"],
-    "보완_방법": ["구체적인 보완 방법 1", "구체적인 보완 방법 2"],
-    "다음_학습_방향": "다음에 집중해야 할 학습 내용"
+    "강점": ["전반적인 강점 1", "전반적인 강점 2"],
+    "약점": ["전반적인 약점"],
+    "보완_방법": ["구체적인 보완 방법"],
+    "다음_학습_방향": "다음에 집중해야 할 구체적인 학습 방향"
   }}
-}}
-
-반드시 JSON만 반환하세요."""
+}}"""
 
         try:
+            # API 호출
             response = self.model.generate_content(prompt)
-            result_text = response.text
+            result_text = response.text.strip()
 
-            # JSON 추출
-            if "```json" in result_text:
-                result_text = result_text.split("```json")[1].split("```")[0].strip()
-            elif "```" in result_text:
-                result_text = result_text.split("```")[1].split("```")[0].strip()
+            print(f"[DEBUG] Gemini 원본 응답 (처음 500자): {result_text[:500]}")
 
-            result = json.loads(result_text)
+            # JSON 추출 - 여러 방법 시도
+            json_text = result_text
+
+            # 방법 1: ```json ... ``` 형식
+            if "```json" in json_text:
+                json_text = json_text.split("```json")[1].split("```")[0].strip()
+            # 방법 2: ``` ... ``` 형식
+            elif "```" in json_text:
+                json_text = json_text.split("```")[1].split("```")[0].strip()
+            # 방법 3: { ... } 추출
+            elif "{" in json_text and "}" in json_text:
+                start = json_text.find("{")
+                end = json_text.rfind("}") + 1
+                json_text = json_text[start:end]
+
+            print(f"[DEBUG] 추출된 JSON (처음 300자): {json_text[:300]}")
+
+            # JSON 파싱
+            result = json.loads(json_text)
+
+            # 필수 필드 검증 및 기본값 설정
+            if "총점" not in result:
+                result["총점"] = 0
+
+            if "논리정확성" not in result:
+                result["논리정확성"] = {
+                    "점수": 0,
+                    "매칭된_키워드": [],
+                    "누락된_키워드": keywords,
+                    "발견된_금지어": [],
+                    "잘한_점": [],
+                    "부족한_점": ["AI 응답 형식 오류"],
+                    "피드백": "JSON 형식 오류"
+                }
+
+            if "명확간결성" not in result:
+                result["명확간결성"] = {
+                    "등급": "C",
+                    "점수": 0,
+                    "잘한_점": [],
+                    "부족한_점": [],
+                    "개선_방법": [],
+                    "피드백": "평가 불가"
+                }
+
+            if "완결성" not in result:
+                result["완결성"] = {
+                    "등급": "C",
+                    "점수": 0,
+                    "잘한_점": [],
+                    "부족한_점": [],
+                    "개선_방법": [],
+                    "피드백": "평가 불가"
+                }
+
+            if "종합_평가" not in result:
+                result["종합_평가"] = {
+                    "강점": [],
+                    "약점": ["AI 채점 오류"],
+                    "보완_방법": ["다시 시도하거나 API 키를 확인하세요"],
+                    "다음_학습_방향": "기본 채점 시스템을 사용하세요"
+                }
+
+            print(f"[DEBUG] 채점 성공 - 총점: {result.get('총점')}")
             return result
 
+        except json.JSONDecodeError as e:
+            print(f"[ERROR] JSON 파싱 오류: {e}")
+            print(f"[ERROR] 문제된 텍스트: {json_text[:500] if 'json_text' in locals() else result_text[:500]}")
+            # Fallback
+            grader = BasicGrader()
+            fallback_result = grader.grade_answer(student_answer, keywords, forbidden_words)
+            fallback_result["종합_평가"]["약점"].append("Gemini API JSON 파싱 실패")
+            return fallback_result
+
         except Exception as e:
-            return {"error": f"채점 중 오류: {str(e)}"}
+            print(f"[ERROR] Gemini API 오류: {type(e).__name__}: {str(e)}")
+            # Fallback
+            grader = BasicGrader()
+            fallback_result = grader.grade_answer(student_answer, keywords, forbidden_words)
+            fallback_result["종합_평가"]["약점"].append(f"Gemini API 오류: {str(e)[:100]}")
+            return fallback_result
 
     def generate_exam_from_files(
         self,
@@ -157,9 +232,10 @@ class GeminiClient:
         """폴더의 자료들로 실전 문제 생성"""
 
         if not self.available:
-            return {"error": "Gemini API를 사용할 수 없습니다"}
+            return {"error": "Gemini API를 사용할 수 없습니다. API 키를 설정하세요."}
 
-        refs_text = "\n\n==========\n\n".join(reference_texts[:5])
+        # 참고 자료 제한 (너무 길면 API 에러)
+        refs_text = "\n\n==========\n\n".join([t[:1500] for t in reference_texts[:5]])
 
         diff_desc = {
             "easy": "쉬움 - 명확한 키워드와 구조",
@@ -180,41 +256,75 @@ class GeminiClient:
 - CEO 메시지, 이메일, 메신저 등 다양한 제시자료 포함
 - 10개 이상의 제시자료
 
-다음 JSON 형식으로 문제를 생성하세요:
+다음 JSON 형식으로 반드시 응답하세요. 다른 텍스트 없이 JSON만 출력하세요:
+
 {{
-  "제목": "보고서 제목",
-  "상황": "배경 상황 설명",
-  "과제": "작성해야 할 내용",
-  "보고서_구성": ["추진배경", "추진방향", "대응전략", "향후계획"],
+  "제목": "OO 추진전략 보고서",
+  "상황": "배경 상황을 2-3문장으로 설명",
+  "과제": "본부장에게 보고할 보고서 작성",
+  "보고서_구성": ["추진배경", "추진방향", "세부전략", "향후계획"],
   "제시자료": [
     {{
       "번호": 1,
       "유형": "CEO 소통 메시지",
-      "내용": "실제 제시자료 내용... (200자 이상)"
+      "내용": "CEO가 전 직원에게 보내는 메시지 내용... (최소 200자)"
     }},
-    ...최소 10개
+    {{
+      "번호": 2,
+      "유형": "부장 이메일",
+      "내용": "부장이 보낸 지시사항... (최소 150자)"
+    }}
   ],
-  "필수_키워드": ["키워드1", "키워드2", ...20개 이상],
-  "금지어": ["금지어1", "금지어2"],
+  "필수_키워드": ["키워드1", "키워드2", "키워드3"],
+  "금지어": ["금지어1"],
   "예상_작성_시간": "150분",
-  "출제_의도": "이 문제의 출제 의도"
-}}
-
-반드시 JSON만 반환하세요."""
+  "출제_의도": "이 문제를 통해 평가하고자 하는 능력"
+}}"""
 
         try:
+            print("[DEBUG] 문제 생성 시작...")
             response = self.model.generate_content(prompt)
-            result_text = response.text
+            result_text = response.text.strip()
 
-            if "```json" in result_text:
-                result_text = result_text.split("```json")[1].split("```")[0].strip()
-            elif "```" in result_text:
-                result_text = result_text.split("```")[1].split("```")[0].strip()
+            print(f"[DEBUG] Gemini 응답 (처음 300자): {result_text[:300]}")
 
-            result = json.loads(result_text)
+            # JSON 추출
+            json_text = result_text
+
+            if "```json" in json_text:
+                json_text = json_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in json_text:
+                json_text = json_text.split("```")[1].split("```")[0].strip()
+            elif "{" in json_text and "}" in json_text:
+                start = json_text.find("{")
+                end = json_text.rfind("}") + 1
+                json_text = json_text[start:end]
+
+            result = json.loads(json_text)
+
+            # 필수 필드 검증
+            if "제목" not in result:
+                result["제목"] = "OPR 실전 문제"
+            if "상황" not in result:
+                result["상황"] = "문제 생성 오류"
+            if "제시자료" not in result or not result["제시자료"]:
+                result["제시자료"] = [{"번호": 1, "유형": "참고", "내용": "제시자료 생성 실패"}]
+            if "필수_키워드" not in result:
+                result["필수_키워드"] = []
+
+            print(f"[DEBUG] 문제 생성 성공 - 제시자료: {len(result.get('제시자료', []))}개")
             return result
 
+        except json.JSONDecodeError as e:
+            print(f"[ERROR] JSON 파싱 오류: {e}")
+            print(f"[ERROR] 문제된 텍스트: {json_text[:500] if 'json_text' in locals() else result_text[:500]}")
+            return {
+                "error": f"JSON 파싱 오류: {str(e)}",
+                "원본_응답": result_text[:500] if len(result_text) > 500 else result_text
+            }
+
         except Exception as e:
+            print(f"[ERROR] 문제 생성 오류: {type(e).__name__}: {str(e)}")
             return {"error": f"문제 생성 중 오류: {str(e)}"}
 
 
