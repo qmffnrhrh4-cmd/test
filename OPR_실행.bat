@@ -8,7 +8,7 @@ echo ========================================
 echo.
 echo  Gemini AI 기반 스마트 채점!
 echo  - PDF/HWP/TXT 파일 첨부 가능
-echo  - 상세한 피드백 (잘한점/부족한점/보완방법)
+echo  - 상세한 피드백
 echo  - 실전 문제 생성
 echo  - 공부 노하우
 echo.

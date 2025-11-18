@@ -19,12 +19,18 @@ try:
     PDF_AVAILABLE = True
 except ImportError:
     PDF_AVAILABLE = False
+    # Define dummy values for when reportlab is not available
+    A4 = (595.27, 841.89)  # A4 size in points
+    mm = 2.834645669  # mm to points conversion
 
 
 class PDFGenerator:
     """PDF 생성기"""
 
     def __init__(self):
+        if not PDF_AVAILABLE:
+            raise ImportError("reportlab이 설치되지 않았습니다. 'pip install reportlab Pillow'를 실행하세요.")
+
         self.page_width, self.page_height = A4
         self.margin = 20 * mm
         self.font_loaded = False
