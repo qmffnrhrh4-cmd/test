@@ -28,6 +28,93 @@ except ImportError:
     PDF_AVAILABLE = False
     print("⚠️ PDF 파일을 읽으려면 'python -m pip install PyPDF2' 실행")
 
+# PDF 생성 (선택적)
+try:
+    from pdf_generator import PDFGenerator
+    PDF_GENERATOR_AVAILABLE = True
+except ImportError:
+    PDF_GENERATOR_AVAILABLE = False
+    print("⚠️ PDF 생성 기능을 사용하려면 'python -m pip install reportlab Pillow' 실행")
+
+
+# ============================================================================
+# 문제 데이터베이스 관리자
+# ============================================================================
+
+class ProblemDatabaseManager:
+    """문제 DB 관리 및 자동 매칭"""
+
+    def __init__(self, db_path: str = "문제_DB.json"):
+        self.db_path = db_path
+        self.problems = []
+        self.load_database()
+
+    def load_database(self):
+        """문제 DB 로드"""
+        try:
+            if os.path.exists(self.db_path):
+                with open(self.db_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    self.problems = data.get('문제_목록', [])
+                print(f"[DB] 문제 DB 로드 완료: {len(self.problems)}개 문제")
+            else:
+                print(f"[DB] 문제 DB 파일이 없습니다: {self.db_path}")
+        except Exception as e:
+            print(f"[DB] 문제 DB 로드 실패: {e}")
+
+    def find_problem_by_content(self, text: str) -> Optional[Dict]:
+        """텍스트 내용으로 문제 자동 인식"""
+        if not text or not self.problems:
+            return None
+
+        # 텍스트 정규화
+        normalized_text = text.replace(' ', '').replace('\n', '').lower()
+
+        best_match = None
+        best_score = 0
+
+        for problem in self.problems:
+            score = 0
+
+            # 제목 매칭 (가장 높은 가중치)
+            title = problem.get('제목', '')
+            if title and title.replace(' ', '') in normalized_text:
+                score += 50
+
+            # 키워드 매칭
+            keywords = problem.get('필수_키워드', [])
+            matched_keywords = 0
+            for keyword in keywords[:5]:  # 상위 5개 키워드만 체크
+                if keyword.replace(' ', '') in normalized_text:
+                    matched_keywords += 1
+            score += matched_keywords * 5
+
+            # 문제 내용 일부 매칭
+            problem_text = problem.get('문제', {})
+            if isinstance(problem_text, dict):
+                situation = problem_text.get('상황', '')
+                if situation and situation[:30].replace(' ', '') in normalized_text:
+                    score += 20
+
+            if score > best_score:
+                best_score = score
+                best_match = problem
+
+        # 최소 점수 기준 (30점 이상)
+        if best_score >= 30:
+            print(f"[DB] 문제 자동 인식: {best_match.get('제목', 'Unknown')} (신뢰도: {best_score})")
+            return best_match
+
+        print(f"[DB] 문제 자동 인식 실패 (최고 점수: {best_score})")
+        return None
+
+    def get_problem_by_id(self, problem_id: str) -> Optional[Dict]:
+        """ID로 문제 조회"""
+        for problem in self.problems:
+            if problem.get('id') == problem_id:
+                return problem
+        return None
+
 
 # ============================================================================
 # Gemini API 클라이언트
@@ -795,6 +882,10 @@ class OPRSystemGUI:
         self.basic_grader = BasicGrader()
         self.file_reader = FileReader()
 
+        # 문제 데이터베이스 및 PDF 생성기 초기화
+        self.problem_db = ProblemDatabaseManager()
+        self.pdf_generator = PDFGenerator() if PDF_GENERATOR_AVAILABLE else None
+
     def create_widgets(self):
         """UI 구성"""
         # 상단
@@ -1075,7 +1166,7 @@ class OPRSystemGUI:
         scrollbar.pack(side="right", fill="y")
 
     def select_answer_file(self):
-        """파일 선택"""
+        """파일 선택 및 자동 문제 인식"""
         filename = filedialog.askopenfilename(
             title="답안 파일 선택",
             filetypes=[
@@ -1095,6 +1186,47 @@ class OPRSystemGUI:
             content = self.file_reader.read_file(filename)
             self.answer_text.delete("1.0", tk.END)
             self.answer_text.insert("1.0", content)
+
+            # 🆕 자동 문제 인식 및 채점기준 로드
+            if self.problem_db and content:
+                detected_problem = self.problem_db.find_problem_by_content(content)
+                if detected_problem:
+                    # 모범답안 자동 입력
+                    model_answer = detected_problem.get('모범답안', '')
+                    self.model_answer_text.delete("1.0", tk.END)
+                    self.model_answer_text.insert("1.0", model_answer)
+
+                    # 필수 키워드 자동 입력
+                    keywords = detected_problem.get('필수_키워드', [])
+                    keywords_str = ', '.join(keywords)
+                    self.keywords_text.delete("1.0", tk.END)
+                    self.keywords_text.insert("1.0", keywords_str)
+
+                    # 금지어 자동 입력
+                    forbidden = detected_problem.get('금지어', [])
+                    if forbidden:
+                        forbidden_str = ', '.join(forbidden)
+                        self.forbidden_text.delete(0, tk.END)
+                        self.forbidden_text.insert(0, forbidden_str)
+
+                    # 사용자에게 알림
+                    messagebox.showinfo(
+                        "자동 인식 완료",
+                        f"문제가 자동으로 인식되었습니다!\n\n"
+                        f"📌 인식된 문제: {detected_problem.get('제목', 'Unknown')}\n"
+                        f"📋 필수 키워드: {len(keywords)}개\n"
+                        f"⚠️ 금지어: {len(forbidden)}개\n\n"
+                        f"모범답안과 채점기준이 자동으로 입력되었습니다.\n"
+                        f"확인 후 '✅ AI 채점 시작' 버튼을 클릭하세요."
+                    )
+                else:
+                    # 문제를 찾지 못한 경우
+                    messagebox.showwarning(
+                        "자동 인식 실패",
+                        "문제를 자동으로 인식하지 못했습니다.\n\n"
+                        "모범답안과 키워드를 직접 입력하거나\n"
+                        "'📋 샘플 불러오기'를 사용하세요."
+                    )
 
     def clear_all_inputs(self):
         """전체 입력 지우기"""
@@ -1307,12 +1439,23 @@ class OPRSystemGUI:
 
         tk.Button(
             btn_frame,
-            text="💾 저장",
+            text="💾 TXT 저장",
             command=lambda: self.save_result(result),
             font=("맑은 고딕", 10),
             bg="#2ecc71",
             fg="white"
         ).pack(side=tk.LEFT, padx=5)
+
+        # PDF 저장 버튼 추가
+        if self.pdf_generator:
+            tk.Button(
+                btn_frame,
+                text="📄 PDF 저장",
+                command=lambda: self.save_result_as_pdf(result),
+                font=("맑은 고딕", 10),
+                bg="#e74c3c",
+                fg="white"
+            ).pack(side=tk.LEFT, padx=5)
 
         tk.Button(
             btn_frame,
@@ -1467,6 +1610,37 @@ class OPRSystemGUI:
                 messagebox.showinfo("저장 완료", f"결과가 저장되었습니다:\n{filename}")
             except Exception as e:
                 messagebox.showerror("저장 오류", f"저장 중 오류: {e}")
+
+    def save_result_as_pdf(self, result: Dict):
+        """채점 결과를 PDF로 저장"""
+        if not self.pdf_generator:
+            messagebox.showerror("오류", "PDF 생성 기능을 사용할 수 없습니다.\nreportlab과 Pillow를 설치하세요.")
+            return
+
+        filename = filedialog.asksaveasfilename(
+            title="채점 결과 PDF 저장",
+            defaultextension=".pdf",
+            filetypes=[("PDF 파일", "*.pdf")]
+        )
+
+        if filename:
+            try:
+                success = self.pdf_generator.generate_grading_result_pdf(result, filename)
+                if success:
+                    messagebox.showinfo("저장 완료", f"PDF가 저장되었습니다:\n{filename}")
+                    # PDF 열기 (선택적)
+                    import subprocess
+                    import platform
+                    if platform.system() == 'Windows':
+                        os.startfile(filename)
+                    elif platform.system() == 'Darwin':  # macOS
+                        subprocess.call(['open', filename])
+                    else:  # Linux
+                        subprocess.call(['xdg-open', filename])
+                else:
+                    messagebox.showerror("오류", "PDF 생성에 실패했습니다.")
+            except Exception as e:
+                messagebox.showerror("저장 오류", f"PDF 저장 중 오류: {e}")
 
     def show_exam_panel(self):
         """문제 생성 패널"""
