@@ -414,6 +414,106 @@ JSON만 출력하세요."""
             fallback_result["종합_평가"]["약점"].append(f"Gemini API 오류: {str(e)[:100]}")
             return fallback_result
 
+    def analyze_problem_paper(self, problem_text: str) -> Dict:
+        """문제지를 AI가 자동으로 분석하여 모범답안과 키워드 추출"""
+
+        if not self.available:
+            return {
+                "error": "Gemini API를 사용할 수 없습니다.",
+                "모범답안": "",
+                "필수_키워드": [],
+                "금지어": []
+            }
+
+        prompt = f"""# 역할
+당신은 한국전력공사 OPR 시험 전문가입니다.
+문제지를 분석하여 모범답안을 작성하고 필수 키워드를 추출해야 합니다.
+
+# 문제지
+{problem_text[:3000]}
+
+# 작업
+1. 문제를 정확히 이해하세요
+2. 문제에 맞는 완벽한 모범답안을 작성하세요 (보고서 형식)
+3. 필수 키워드 15-20개를 추출하세요
+4. 사용하면 안 되는 금지어 5개를 지정하세요
+
+# 모범답안 작성 기준
+- 보고서 형식: 제목, 1/2/3/4 대제목, □/○/- 기호 사용
+- 최소 15줄 이상
+- 제시자료의 단어를 그대로 사용
+- 구체적인 수치 포함
+- 단기/중장기 구분 (필요시)
+
+# 필수 키워드 추출 기준
+- 문제의 핵심 개념
+- 제시자료에 나온 기술명, 조직명, 정책명
+- 구체적인 수치
+- 중요한 전문용어
+
+# 출력 형식
+**반드시 아래 JSON 형식으로만 응답하세요.**
+
+```json
+{{
+  "문제_제목": "추출한 문제 제목",
+  "모범답안": "완벽한 보고서 형식의 모범답안 (최소 15줄)\\n\\n1. 추진배경\\n□ ...\\n○ ...\\n\\n2. 추진방향\\n□ ...\\n○ ...\\n\\n3. 대응전략\\n□ ...\\n○ ...\\n\\n4. 향후계획\\n□ ...",
+  "필수_키워드": ["키워드1", "키워드2", "키워드3", "...최소 15개"],
+  "금지어": ["금지어1", "금지어2", "금지어3", "금지어4", "금지어5"],
+  "문제_분석": "이 문제는 무엇을 요구하는가에 대한 간단한 설명"
+}}
+```
+
+JSON만 출력하세요."""
+
+        try:
+            print("[INFO] AI가 문제지를 분석 중...")
+            response = self.model.generate_content(prompt)
+            result_text = response.text.strip()
+
+            print(f"[DEBUG] AI 분석 응답 (처음 300자): {result_text[:300]}")
+
+            # JSON 추출
+            json_text = result_text
+            if "```json" in json_text:
+                json_text = json_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in json_text:
+                json_text = json_text.split("```")[1].split("```")[0].strip()
+            elif "{" in json_text and "}" in json_text:
+                start = json_text.find("{")
+                end = json_text.rfind("}") + 1
+                json_text = json_text[start:end]
+
+            result = json.loads(json_text)
+
+            # 필수 필드 확인
+            if "모범답안" not in result:
+                result["모범답안"] = "모범답안 생성 실패"
+            if "필수_키워드" not in result:
+                result["필수_키워드"] = []
+            if "금지어" not in result:
+                result["금지어"] = []
+
+            print(f"[INFO] 문제지 분석 완료 - 키워드: {len(result.get('필수_키워드', []))}개, 금지어: {len(result.get('금지어', []))}개")
+            return result
+
+        except json.JSONDecodeError as e:
+            print(f"[ERROR] JSON 파싱 오류: {e}")
+            return {
+                "error": f"JSON 파싱 오류: {str(e)}",
+                "모범답안": "",
+                "필수_키워드": [],
+                "금지어": []
+            }
+        except Exception as e:
+            print(f"[ERROR] 문제지 분석 오류: {type(e).__name__}: {str(e)}")
+            return {
+                "error": f"문제지 분석 중 오류: {str(e)}",
+                "모범답안": "",
+                "필수_키워드": [],
+                "금지어": []
+            }
+
     def generate_exam_from_files(
         self,
         reference_texts: List[str],
@@ -1003,11 +1103,19 @@ class OPRSystemGUI:
         # 1. 문제지 업로드
         problem_frame = tk.LabelFrame(
             scrollable_frame,
-            text="1️⃣ 문제지 업로드 (PDF/HWP/TXT)",
+            text="1️⃣ 문제지 업로드 (AI가 자동으로 분석합니다)",
             font=("맑은 고딕", 11, "bold"),
             bg="white"
         )
         problem_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        tk.Label(
+            problem_frame,
+            text="💡 문제지를 업로드하면 AI가 자동으로 모범답안과 키워드를 생성합니다",
+            font=("맑은 고딕", 9),
+            bg="white",
+            fg="#27ae60"
+        ).pack(pady=3)
 
         self.problem_file_var = tk.StringVar(value="파일 없음")
         tk.Label(
@@ -1020,12 +1128,13 @@ class OPRSystemGUI:
 
         tk.Button(
             problem_frame,
-            text="📂 문제지 선택",
+            text="📂 문제지 선택 (PDF/HWP/TXT)",
             command=self.select_problem_file,
-            font=("맑은 고딕", 9),
+            font=("맑은 고딕", 10, "bold"),
             bg="#9b59b6",
-            fg="white"
-        ).pack(pady=3)
+            fg="white",
+            height=2
+        ).pack(pady=5, padx=10, fill=tk.X)
 
         # 2. 답안지 업로드
         answer_frame = tk.LabelFrame(
@@ -1148,7 +1257,7 @@ class OPRSystemGUI:
         scrollbar.pack(side="right", fill="y")
 
     def select_problem_file(self):
-        """문제지 파일 선택 및 자동 채점기준 로드"""
+        """문제지 파일 선택 및 AI 자동 분석"""
         filename = filedialog.askopenfilename(
             title="문제지 파일 선택",
             filetypes=[
@@ -1160,52 +1269,129 @@ class OPRSystemGUI:
             ]
         )
 
-        if filename:
-            self.problem_file_var.set(f"선택: {os.path.basename(filename)}")
+        if not filename:
+            return
 
-            # 파일 읽기
-            content = self.file_reader.read_file(filename)
+        self.problem_file_var.set(f"선택: {os.path.basename(filename)}")
 
-            # 자동 문제 인식 및 채점기준 로드
+        # 파일 읽기
+        content = self.file_reader.read_file(filename)
+
+        if not content:
+            messagebox.showerror("오류", "파일을 읽을 수 없습니다.")
+            return
+
+        # 진행 창 표시
+        progress = tk.Toplevel(self.root)
+        progress.title("문제지 분석 중...")
+        progress.geometry("450x180")
+        progress.transient(self.root)
+        progress.grab_set()
+
+        tk.Label(
+            progress,
+            text="🤖 AI가 문제지를 분석하고 있습니다...",
+            font=("맑은 고딕", 13, "bold"),
+            pady=20
+        ).pack()
+
+        tk.Label(
+            progress,
+            text=f"✓ 문제 이해 중\n✓ 모범답안 생성 중\n✓ 필수 키워드 추출 중",
+            font=("맑은 고딕", 10),
+            fg="#2c3e50",
+            justify=tk.LEFT
+        ).pack()
+
+        tk.Label(
+            progress,
+            text="20-40초 정도 소요됩니다...",
+            font=("맑은 고딕", 9),
+            fg="#7f8c8d"
+        ).pack(pady=10)
+
+        progress.update()
+
+        try:
+            # 먼저 DB에서 시도 (빠른 경로)
+            db_result = None
             if self.problem_db and content:
-                detected_problem = self.problem_db.find_problem_by_content(content)
-                if detected_problem:
-                    # 모범답안 자동 입력
-                    model_answer = detected_problem.get('모범답안', '')
-                    self.model_answer_text.delete("1.0", tk.END)
-                    self.model_answer_text.insert("1.0", model_answer)
+                db_result = self.problem_db.find_problem_by_content(content)
 
-                    # 필수 키워드 자동 입력
-                    keywords = detected_problem.get('필수_키워드', [])
-                    keywords_str = ', '.join(keywords)
-                    self.keywords_text.delete("1.0", tk.END)
-                    self.keywords_text.insert("1.0", keywords_str)
+            if db_result:
+                # DB에서 찾음
+                print("[INFO] DB에서 문제 발견, DB 데이터 사용")
+                model_answer = db_result.get('모범답안', '')
+                keywords = db_result.get('필수_키워드', [])
+                forbidden = db_result.get('금지어', [])
+                problem_title = db_result.get('제목', 'Unknown')
 
-                    # 금지어 자동 입력
-                    forbidden = detected_problem.get('금지어', [])
-                    if forbidden:
-                        forbidden_str = ', '.join(forbidden)
-                        self.forbidden_text.delete(0, tk.END)
-                        self.forbidden_text.insert(0, forbidden_str)
+            elif self.ai_available:
+                # AI로 분석
+                print("[INFO] DB에서 못 찾음, AI 자동 분석 시작")
+                ai_result = self.ai_client.analyze_problem_paper(content)
 
-                    # 사용자에게 알림
-                    messagebox.showinfo(
-                        "문제지 인식 완료",
-                        f"문제지가 자동으로 인식되었습니다!\n\n"
-                        f"📌 인식된 문제: {detected_problem.get('제목', 'Unknown')}\n"
-                        f"📋 필수 키워드: {len(keywords)}개\n"
-                        f"⚠️ 금지어: {len(forbidden)}개\n\n"
-                        f"모범답안과 채점기준이 자동으로 입력되었습니다.\n"
-                        f"이제 답안지를 업로드하세요."
+                if "error" in ai_result:
+                    progress.destroy()
+                    messagebox.showerror(
+                        "AI 분석 실패",
+                        f"문제지 분석 중 오류가 발생했습니다:\n{ai_result['error']}\n\n"
+                        f"모범답안과 키워드를 직접 입력해주세요."
                     )
-                else:
-                    # 문제를 찾지 못한 경우
-                    messagebox.showwarning(
-                        "자동 인식 실패",
-                        "문제지를 자동으로 인식하지 못했습니다.\n\n"
-                        "모범답안과 키워드를 직접 입력하거나\n"
-                        "'📋 샘플 불러오기'를 사용하세요."
-                    )
+                    return
+
+                model_answer = ai_result.get('모범답안', '')
+                keywords = ai_result.get('필수_키워드', [])
+                forbidden = ai_result.get('금지어', [])
+                problem_title = ai_result.get('문제_제목', 'AI 분석 완료')
+
+            else:
+                # AI도 없음
+                progress.destroy()
+                messagebox.showwarning(
+                    "AI 미사용",
+                    "Gemini API가 활성화되지 않았습니다.\n\n"
+                    "자동 분석을 위해 API 키를 설정하거나\n"
+                    "모범답안과 키워드를 직접 입력해주세요."
+                )
+                return
+
+            # 모범답안 자동 입력
+            self.model_answer_text.delete("1.0", tk.END)
+            self.model_answer_text.insert("1.0", model_answer)
+
+            # 필수 키워드 자동 입력
+            keywords_str = ', '.join(keywords)
+            self.keywords_text.delete("1.0", tk.END)
+            self.keywords_text.insert("1.0", keywords_str)
+
+            # 금지어 자동 입력
+            if forbidden:
+                forbidden_str = ', '.join(forbidden)
+                self.forbidden_text.delete(0, tk.END)
+                self.forbidden_text.insert(0, forbidden_str)
+
+            progress.destroy()
+
+            # 사용자에게 알림
+            messagebox.showinfo(
+                "✅ 문제지 분석 완료!",
+                f"문제지가 자동으로 분석되었습니다!\n\n"
+                f"📌 문제: {problem_title}\n"
+                f"📋 필수 키워드: {len(keywords)}개\n"
+                f"⚠️ 금지어: {len(forbidden)}개\n"
+                f"📄 모범답안: 생성 완료\n\n"
+                f"이제 답안지를 업로드하세요!"
+            )
+
+        except Exception as e:
+            progress.destroy()
+            print(f"[ERROR] 문제지 분석 오류: {type(e).__name__}: {str(e)}")
+            messagebox.showerror(
+                "오류",
+                f"문제지 분석 중 오류가 발생했습니다:\n{str(e)}\n\n"
+                f"모범답안과 키워드를 직접 입력해주세요."
+            )
 
     def select_answer_file(self):
         """답안지 파일 선택"""
