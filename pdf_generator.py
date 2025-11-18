@@ -9,6 +9,11 @@ import os
 from datetime import datetime
 from typing import Dict, List
 
+# Define default values first
+A4 = (595.27, 841.89)  # A4 size in points
+mm = 2.834645669  # mm to points conversion
+PDF_AVAILABLE = False
+
 try:
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import mm
@@ -18,10 +23,7 @@ try:
     from reportlab.lib import colors
     PDF_AVAILABLE = True
 except ImportError:
-    PDF_AVAILABLE = False
-    # Define dummy values for when reportlab is not available
-    A4 = (595.27, 841.89)  # A4 size in points
-    mm = 2.834645669  # mm to points conversion
+    pass  # Use default values defined above
 
 
 class PDFGenerator:
