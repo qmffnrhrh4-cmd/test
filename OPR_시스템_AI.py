@@ -210,66 +210,35 @@ class GeminiClient:
 
         prompt = f"""# 역할
 당신은 한국전력공사의 수석 OPR(논술형 시험) 채점위원입니다.
-20년 이상의 채점 경험을 가지고 있으며, 매년 1000건 이상의 답안을 채점합니다.
 
-{few_shot_examples}
-
-# 채점 철학
-- 제시자료의 단어를 그대로 사용했는지 최우선으로 평가합니다
-- 키워드가 많을수록 높은 점수를 부여합니다
-- 불필요한 내용이나 금지어 사용은 엄격히 감점합니다
-- 보고서 형식(제목, □/○/-, 단기/중장기 구분)을 중요하게 봅니다
+# 채점 방식: 모범답안 오버랩 비교
+학생 답안을 모범답안과 직접 비교하여 채점합니다.
 
 # 채점 기준 (총 100점)
 
-## 1. 논리·정확성 (40점) ⭐ 가장 중요
-- 필수 키워드를 얼마나 포함했는가? (키워드당 약 3-4점)
-- 모범답안과 내용이 일치하는가?
-- 금지어를 사용했는가? (1개당 -2점)
-- 제시자료의 단어를 그대로 사용했는가?
-- 수치(예: 2.6GW, 6.5GW)를 정확히 포함했는가?
+## 1. 내용 일치도 (50점) - 모범답안과 비교
+모범답안의 각 섹션이 학생 답안에 얼마나 반영되었는지 평가:
+- 제목 및 배경 (10점): 문제의 핵심을 파악했는가?
+- 주요 내용 (30점): 모범답안의 핵심 내용을 포함했는가?
+- 구체적 수치/기술명 (10점): 정확한 데이터를 사용했는가?
 
-**평가 방법:**
-- 키워드 {len(keywords)}개 중 매칭된 개수 × 3.3점 = 논리정확성 기본점수
-- 금지어 발견 시 각 2점씩 감점
-- 모범답안과 비교하여 논리 흐름이 일치하면 +5점
-- 최종 40점 만점으로 조정
+## 2. 키워드 매칭 (30점)
+필수 키워드 {len(keywords)}개 중 얼마나 포함했는가:
+- 모든 키워드 포함: 30점
+- 70% 이상: 21-25점
+- 50% 이상: 15-20점
+- 50% 미만: 15점 이하
+- 금지어 사용 시: 1개당 -2점
 
-## 2. 명확·간결성 (30점)
-- S등급(30점): 매우 명확하고 간결, 35자 제한 완벽 준수
-- A등급(25-26점): 명확하고 간결함
-- B등급(20-22점): 보통 수준, 약간의 반복 있음
-- C등급(16-18점): 장황한 표현 다수
-- D등급(12점 이하): 불필요한 내용이 많음
-
-**감점 요소:**
-- 같은 내용 반복: -2점
-- 불필요한 수식어: -1점
-- 한 줄이 35자 초과: -1점
-
-## 3. 완결성 (30점)
-- S등급(30점): 완벽한 보고서 형식
-- A등급(25-26점): 훌륭한 구조
-- B등급(20-22점): 기본 구조 갖춤
-- C등급(16-18점): 구조 미흡
-- D등급(12점 이하): 형식 없음
-
-**평가 요소:**
-- 제목 작성: 필수
-- 1/2/3/4 대제목: 필수
-- □/○/- 기호 사용: 권장
-- 단기/중장기 구분: 문제에 따라
-- 최소 15줄 이상: 필수
+## 3. 형식 및 구조 (20점)
+- 보고서 제목 (5점)
+- 대제목 구분 (5점)
+- □/○/- 기호 사용 (5점)
+- 분량 및 체계 (5점)
 
 ---
 
 # 채점 대상
-
-【필수 키워드 {len(keywords)}개】
-{', '.join(keywords)}
-
-【금지어 {len(forbidden_words)}개】
-{', '.join(forbidden_words) if forbidden_words else '없음'}
 
 【모범답안】
 {model_answer[:1500]}
@@ -277,101 +246,78 @@ class GeminiClient:
 【학생 답안】
 {student_answer[:2000]}
 
+【필수 키워드 {len(keywords)}개】
+{', '.join(keywords)}
+
+【금지어】
+{', '.join(forbidden_words) if forbidden_words else '없음'}
+
 ---
 
-# 채점 프로세스 (단계별로 생각하세요)
+# 채점 절차
 
-**STEP 1: 키워드 분석 (가장 중요!)**
-먼저 학생 답안을 읽으며 각 키워드를 찾으세요:
-- 공백 무시: "전력망 건설지연" = "전력망건설지연" = "전력망 건설 지연"
-- 부분 매칭: "발전제약해소"가 "발전제약 해소를 위한"에 있으면 매칭됨
-- 각 키워드별로 명확히 표시: 있음/없음
+1. **모범답안과 학생답안을 줄별로 비교**:
+   - 각 섹션(추진배경, 추진방향, 대응전략 등)이 학생답안에 있는가?
+   - 모범답안의 핵심 내용이 학생답안에 반영되었는가?
+   - 얼마나 유사한가? (매우유사/유사/부분유사/다름)
 
-**STEP 2: 금지어 검사**
-답안에서 금지어를 찾으세요:
-- 금지어 1개당 -2점
-- 정확한 금지어 목록 작성
+2. **키워드 매칭 확인**:
+   - 각 키워드가 학생답안에 있는지 확인 (공백 무시)
+   - 매칭된 키워드와 누락된 키워드 구분
 
-**STEP 3: 모범답안 비교**
-학생 답안과 모범답안을 비교하세요:
-- 구조가 비슷한가? (제목, 대제목, 기호)
-- 내용이 유사한가? (논리 흐름)
-- 구체성이 있는가? (수치, 기술명)
+3. **금지어 검사**:
+   - 금지어 사용 여부 확인
 
-**STEP 4: 보고서 형식 평가**
-- 제목 있는가?
-- 1/2/3/4 대제목 있는가?
-- □/○/- 기호 사용했는가?
-- 15줄 이상인가?
+4. **형식 평가**:
+   - 제목, 대제목, 기호, 분량 확인
 
-**STEP 5: 점수 계산**
-위 분석을 바탕으로 점수를 계산하세요:
-- 논리정확성 = (매칭 키워드 / 전체 키워드) × 40 - 금지어×2
-- 명확간결성 = S(30)/A(25-26)/B(20-22)/C(16-18)/D(12)
-- 완결성 = S(30)/A(25-26)/B(20-22)/C(16-18)/D(12)
-
-**STEP 6: 구체적 피드백 작성**
-- 잘한 점: 구체적으로 어떤 키워드를 포함했는지
-- 부족한 점: 어떤 키워드가 누락되었는지
-- 개선 방법: 정확히 무엇을 어떻게 고쳐야 하는지
-- 다음 학습: 구체적인 공부 방향
+5. **점수 산정 및 피드백 작성**
 
 ---
 
 # 출력 형식
 
-**반드시 아래 JSON 형식으로만 응답하세요. 다른 텍스트는 절대 포함하지 마세요.**
+**반드시 아래 JSON 형식으로만 응답하세요.**
 
 ```json
 {{
-  "총점": 75,
+  "총점": 73,
   "논리정확성": {{
     "점수": 32,
-    "매칭된_키워드": ["발전제약 해소", "법령 제개정", "NWAs"],
-    "누락된_키워드": ["전력망혁신위원회", "WAMS"],
+    "매칭된_키워드": ["키워드1", "키워드2"],
+    "누락된_키워드": ["키워드3", "키워드4"],
     "발견된_금지어": [],
     "잘한_점": [
-      "발전제약 해소, 법령 제개정 등 핵심 키워드를 정확히 포함함",
-      "단기/중장기 구분이 명확함",
-      "구체적인 수치(2.6GW)를 포함함"
+      "모범답안의 추진배경 부분을 정확히 반영함",
+      "주요 수치(2.6GW 등)를 포함함"
     ],
     "부족한_점": [
-      "전력망혁신위원회, WAMS 등 4개 키워드 누락",
-      "시공기간 단축 내용이 구체적이지 않음"
+      "추진방향 부분이 모범답안과 다름",
+      "일부 키워드 누락"
     ],
-    "피드백": "{len(keywords)}개 키워드 중 {len(keywords)//2}개 매칭. 제시자료의 모든 기술명(NWAs, WAMS 등)을 반드시 포함하세요."
+    "피드백": "모범답안과 {len(keywords)}개 중 X개 키워드 매칭"
   }},
   "명확간결성": {{
     "등급": "A",
     "점수": 25,
-    "잘한_점": ["간결한 문장 사용", "불필요한 수식어 없음"],
-    "부족한_점": ["일부 내용 반복"],
-    "개선_방법": ["같은 내용은 한 번만 작성", "35자 제한 준수"],
-    "피드백": "전반적으로 간결하나 일부 표현을 더 다듬으면 좋겠습니다."
+    "잘한_점": ["간결한 표현"],
+    "부족한_점": [],
+    "개선_방법": ["모범답안처럼 더 간결하게"],
+    "피드백": "전반적으로 명확함"
   }},
   "완결성": {{
     "등급": "B",
     "점수": 21,
-    "잘한_점": ["제목 작성", "1/2/3/4 대제목 구분"],
-    "부족한_점": ["□/○ 기호 미사용", "15줄 미만"],
-    "개선_방법": ["□/○/- 기호를 활용하여 계층 구조 명확히", "최소 15줄 이상 작성"],
-    "피드백": "기본 구조는 갖췄으나 보고서 형식을 더 갖춰야 합니다."
+    "잘한_점": ["기본 구조 갖춤"],
+    "부족한_점": ["기호 미사용"],
+    "개선_방법": ["□/○ 기호 사용"],
+    "피드백": "모범답안처럼 형식을 갖추세요"
   }},
   "종합_평가": {{
-    "강점": [
-      "핵심 키워드를 상당수 포함함",
-      "단기/중장기 구분이 명확함"
-    ],
-    "약점": [
-      "일부 중요 키워드(WAMS, 전력망혁신위원회 등) 누락",
-      "보고서 형식(□/○ 기호) 미비"
-    ],
-    "보완_방법": [
-      "제시자료의 모든 기술명을 빠짐없이 작성",
-      "□/○/- 기호를 사용하여 보고서 형식 갖추기",
-      "누락된 키워드 4개를 추가하면 10점 이상 향상 가능"
-    ],
-    "다음_학습_방향": "제시자료를 여러 번 읽으며 키워드 추출 연습을 하세요. 특히 기술명(NWAs, WAMS 등)과 조직명(전력망혁신위원회 등)은 반드시 포함해야 합니다."
+    "강점": ["모범답안과 유사한 구조"],
+    "약점": ["일부 내용 누락"],
+    "보완_방법": ["모범답안을 참고하여 누락된 부분 추가"],
+    "다음_학습_방향": "모범답안의 구조와 키워드를 정확히 따라 작성하는 연습"
   }}
 }}
 ```
@@ -1054,10 +1000,37 @@ class OPRSystemGUI:
         canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
 
-        # 1. 학생 답안
+        # 1. 문제지 업로드
+        problem_frame = tk.LabelFrame(
+            scrollable_frame,
+            text="1️⃣ 문제지 업로드 (PDF/HWP/TXT)",
+            font=("맑은 고딕", 11, "bold"),
+            bg="white"
+        )
+        problem_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        self.problem_file_var = tk.StringVar(value="파일 없음")
+        tk.Label(
+            problem_frame,
+            textvariable=self.problem_file_var,
+            font=("맑은 고딕", 9),
+            bg="white",
+            fg="#7f8c8d"
+        ).pack(pady=3)
+
+        tk.Button(
+            problem_frame,
+            text="📂 문제지 선택",
+            command=self.select_problem_file,
+            font=("맑은 고딕", 9),
+            bg="#9b59b6",
+            fg="white"
+        ).pack(pady=3)
+
+        # 2. 답안지 업로드
         answer_frame = tk.LabelFrame(
             scrollable_frame,
-            text="1️⃣ 학생 답안 (PDF/HWP/TXT 첨부 또는 직접 입력)",
+            text="2️⃣ 답안지 업로드 (PDF/HWP/TXT 첨부 또는 직접 입력)",
             font=("맑은 고딕", 11, "bold"),
             bg="white"
         )
@@ -1074,7 +1047,7 @@ class OPRSystemGUI:
 
         tk.Button(
             answer_frame,
-            text="📂 PDF/HWP/TXT 파일 선택",
+            text="📂 답안지 선택",
             command=self.select_answer_file,
             font=("맑은 고딕", 9),
             bg="#3498db",
@@ -1089,10 +1062,10 @@ class OPRSystemGUI:
         )
         self.answer_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        # 2. 모범답안
+        # 3. 모범답안
         model_frame = tk.LabelFrame(
             scrollable_frame,
-            text="2️⃣ 모범답안 (비교 기준)",
+            text="3️⃣ 모범답안 (비교 기준 - 자동입력됨)",
             font=("맑은 고딕", 11, "bold"),
             bg="white"
         )
@@ -1106,10 +1079,10 @@ class OPRSystemGUI:
         )
         self.model_answer_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        # 3. 필수 키워드
+        # 4. 필수 키워드
         keyword_frame = tk.LabelFrame(
             scrollable_frame,
-            text="3️⃣ 필수 키워드 (쉼표로 구분)",
+            text="4️⃣ 필수 키워드 (쉼표로 구분 - 자동입력됨)",
             font=("맑은 고딕", 11, "bold"),
             bg="white"
         )
@@ -1123,10 +1096,10 @@ class OPRSystemGUI:
         )
         self.keywords_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        # 4. 금지어
+        # 5. 금지어
         forbidden_frame = tk.LabelFrame(
             scrollable_frame,
-            text="4️⃣ 금지어 (쉼표로 구분, 선택사항)",
+            text="5️⃣ 금지어 (쉼표로 구분, 선택사항)",
             font=("맑은 고딕", 11, "bold"),
             bg="white"
         )
@@ -1174,10 +1147,10 @@ class OPRSystemGUI:
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-    def select_answer_file(self):
-        """파일 선택 및 자동 문제 인식"""
+    def select_problem_file(self):
+        """문제지 파일 선택 및 자동 채점기준 로드"""
         filename = filedialog.askopenfilename(
-            title="답안 파일 선택",
+            title="문제지 파일 선택",
             filetypes=[
                 ("지원 파일", "*.pdf *.txt *.hwp"),
                 ("PDF 파일", "*.pdf"),
@@ -1188,15 +1161,12 @@ class OPRSystemGUI:
         )
 
         if filename:
-            self.selected_file = filename
-            self.answer_file_var.set(f"선택: {os.path.basename(filename)}")
+            self.problem_file_var.set(f"선택: {os.path.basename(filename)}")
 
             # 파일 읽기
             content = self.file_reader.read_file(filename)
-            self.answer_text.delete("1.0", tk.END)
-            self.answer_text.insert("1.0", content)
 
-            # 🆕 자동 문제 인식 및 채점기준 로드
+            # 자동 문제 인식 및 채점기준 로드
             if self.problem_db and content:
                 detected_problem = self.problem_db.find_problem_by_content(content)
                 if detected_problem:
@@ -1220,22 +1190,51 @@ class OPRSystemGUI:
 
                     # 사용자에게 알림
                     messagebox.showinfo(
-                        "자동 인식 완료",
-                        f"문제가 자동으로 인식되었습니다!\n\n"
+                        "문제지 인식 완료",
+                        f"문제지가 자동으로 인식되었습니다!\n\n"
                         f"📌 인식된 문제: {detected_problem.get('제목', 'Unknown')}\n"
                         f"📋 필수 키워드: {len(keywords)}개\n"
                         f"⚠️ 금지어: {len(forbidden)}개\n\n"
                         f"모범답안과 채점기준이 자동으로 입력되었습니다.\n"
-                        f"확인 후 '✅ AI 채점 시작' 버튼을 클릭하세요."
+                        f"이제 답안지를 업로드하세요."
                     )
                 else:
                     # 문제를 찾지 못한 경우
                     messagebox.showwarning(
                         "자동 인식 실패",
-                        "문제를 자동으로 인식하지 못했습니다.\n\n"
+                        "문제지를 자동으로 인식하지 못했습니다.\n\n"
                         "모범답안과 키워드를 직접 입력하거나\n"
                         "'📋 샘플 불러오기'를 사용하세요."
                     )
+
+    def select_answer_file(self):
+        """답안지 파일 선택"""
+        filename = filedialog.askopenfilename(
+            title="답안지 파일 선택",
+            filetypes=[
+                ("지원 파일", "*.pdf *.txt *.hwp"),
+                ("PDF 파일", "*.pdf"),
+                ("텍스트 파일", "*.txt"),
+                ("한글 파일", "*.hwp"),
+                ("모든 파일", "*.*")
+            ]
+        )
+
+        if filename:
+            self.answer_file_var.set(f"선택: {os.path.basename(filename)}")
+
+            # 파일 읽기
+            content = self.file_reader.read_file(filename)
+            self.answer_text.delete("1.0", tk.END)
+            self.answer_text.insert("1.0", content)
+
+            messagebox.showinfo(
+                "답안지 로드 완료",
+                f"답안지가 로드되었습니다.\n\n"
+                f"파일: {os.path.basename(filename)}\n\n"
+                f"모범답안과 키워드를 확인한 후\n"
+                f"'✅ AI 채점 시작' 버튼을 클릭하세요."
+            )
 
     def clear_all_inputs(self):
         """전체 입력 지우기"""
@@ -1243,8 +1242,8 @@ class OPRSystemGUI:
         self.model_answer_text.delete("1.0", tk.END)
         self.keywords_text.delete("1.0", tk.END)
         self.forbidden_text.delete(0, tk.END)
+        self.problem_file_var.set("파일 없음")
         self.answer_file_var.set("파일 없음")
-        self.selected_file = None
 
     def load_sample_with_criteria(self):
         """샘플 + 채점기준 함께 불러오기"""
