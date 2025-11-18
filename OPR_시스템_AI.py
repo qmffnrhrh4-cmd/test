@@ -884,7 +884,16 @@ class OPRSystemGUI:
 
         # 문제 데이터베이스 및 PDF 생성기 초기화
         self.problem_db = ProblemDatabaseManager()
-        self.pdf_generator = PDFGenerator() if PDF_GENERATOR_AVAILABLE else None
+
+        # PDF 생성기 초기화 (reportlab이 설치되어 있어야 함)
+        if PDF_GENERATOR_AVAILABLE:
+            try:
+                self.pdf_generator = PDFGenerator()
+            except ImportError as e:
+                print(f"[PDF] PDF 생성기 초기화 실패: {e}")
+                self.pdf_generator = None
+        else:
+            self.pdf_generator = None
 
     def create_widgets(self):
         """UI 구성"""
