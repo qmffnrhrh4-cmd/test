@@ -130,7 +130,7 @@ class GeminiClient:
         if self.api_key and GEMINI_AVAILABLE:
             try:
                 genai.configure(api_key=self.api_key)
-                self.model = genai.GenerativeModel('gemini-pro')
+                self.model = genai.GenerativeModel('gemini-2.5-flash')
                 self.available = True
             except Exception as e:
                 print(f"Gemini API 초기화 실패: {e}")
