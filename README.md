@@ -1,15 +1,30 @@
-# OPR 자동 채점 시스템
+# OPR 자동 채점 시스템 V2 🚀
 
-OPR(논술형 시험) 자동 채점, 문제 생성, 학습 가이드를 제공하는 통합 시스템입니다.
+OPR(논술형 시험) AI 기반 자동 채점, 실제 문제 생성, PDF 분석 학습 가이드를 제공하는 통합 시스템입니다.
+
+## ✨ V2의 새로운 기능
+
+### 🎯 Claude API 연동
+- **정확한 채점**: 모범답안과 실제 비교하여 AI가 채점
+- **실제 문제 생성**: 기출문제 PDF를 분석하여 유사한 문제 자동 생성
+- **PDF 기반 가이드**: 채점 방식, 작성 팁 PDF를 분석하여 맞춤형 가이드 제공
+
+### 📂 파일 첨부 지원
+- **TXT/PDF 모두 지원**: 답안을 텍스트나 PDF로 제출 가능
+- **모범답안 자동 로드**: 모범답안 폴더에서 자동으로 최신 답안 사용
+- **문제 폴더 시스템**: 생성된 문제를 폴더에 자동 저장
 
 ## 🚀 빠른 시작 (추천!)
 
 ```bash
-# GUI 버전 실행 - 버튼 클릭으로 모든 기능 사용!
+# V2 GUI 버전 실행 - AI 기반 스마트 채점!
+python opr_gui_v2.py
+
+# 또는 V1 GUI 버전 (API 없이도 작동)
 python opr_gui.py
 ```
 
-**GUI 버전을 사용하면 버튼만 눌러서 모든 기능을 쉽게 사용할 수 있습니다!**
+**V2를 사용하면 Claude AI의 강력한 분석 능력으로 더 정확한 채점과 문제 생성이 가능합니다!**
 
 ## 📋 주요 기능
 
@@ -168,20 +183,35 @@ python study_guide.py
 
 ```
 /home/user/test/
-├── opr_gui.py                 # ⭐ GUI 메인 프로그램 (추천!)
+├── opr_gui_v2.py              # ⭐ V2 GUI (AI 기반, 추천!)
+├── opr_gui.py                 # V1 GUI (기본 버전)
+│
+├── auto_grading_system_v2.py  # V2 AI 채점 시스템
+├── exam_generator_v2.py       # V2 AI 문제 생성기
+├── study_guide_v2.py          # V2 PDF 분석 가이드
+│
+├── claude_api_client.py       # Claude API 클라이언트
+├── pdf_utils.py               # PDF 읽기 유틸리티
+│
+├── auto_grading_system.py     # V1 채점 시스템
+├── exam_generator.py          # V1 문제 생성기
+├── study_guide.py             # V1 공부 가이드
 ├── opr_system.py              # 명령줄 통합 프로그램
-├── auto_grading_system.py     # 자동 채점 시스템
-├── exam_generator.py          # 문제 생성기
-├── study_guide.py             # 공부 가이드
+│
+├── requirements.txt           # 필요한 패키지
 ├── README.md                  # 이 파일
 │
 ├── 문제지/                     # 기출문제 PDF
 │   ├── 25년 OPR 문제(1교시).pdf
 │   └── ...
 │
-└── 모범답안/                   # 모범답안 및 채점 자료
-    ├── OPR 채점방식.pdf
-    ├── OPR 작성 팁.pdf
+├── 모범답안/                   # 모범답안 및 채점 자료
+│   ├── OPR 채점방식.pdf
+│   ├── OPR 작성 팁.pdf
+│   ├── 25년 OPR 고득점(1교시)_1.pdf
+│   └── ...
+│
+└── 생성된_문제/                # AI가 생성한 문제 저장
     └── ...
 ```
 
