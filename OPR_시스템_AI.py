@@ -38,6 +38,136 @@ except ImportError:
 
 
 # ============================================================================
+# 모범답안 폴더 관리자
+# ============================================================================
+
+class ModelAnswerManager:
+    """모범답안 폴더에서 파일을 읽고 매칭"""
+
+    def __init__(self, folder_path: str = "모범답안"):
+        self.folder_path = folder_path
+        self.model_answers = []
+        self.load_all_model_answers()
+
+    def load_all_model_answers(self):
+        """모범답안 폴더의 모든 파일 로드"""
+        if not os.path.exists(self.folder_path):
+            print(f"[모범답안] 폴더가 없습니다: {self.folder_path}")
+            return
+
+        for filename in os.listdir(self.folder_path):
+            if filename.endswith(('.txt', '.md')):
+                filepath = os.path.join(self.folder_path, filename)
+                model_answer_data = self.parse_model_answer_file(filepath)
+                if model_answer_data:
+                    model_answer_data['파일명'] = filename
+                    self.model_answers.append(model_answer_data)
+
+        print(f"[모범답안] {len(self.model_answers)}개 모범답안 로드 완료")
+
+    def parse_model_answer_file(self, filepath: str) -> Optional[Dict]:
+        """모범답안 파일 파싱"""
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            result = {
+                '모범답안': '',
+                '필수_키워드': [],
+                '금지어': [],
+                '채점_팁': []
+            }
+
+            # [모범답안] 섹션 추출
+            if '[모범답안]' in content:
+                parts = content.split('[모범답안]')[1]
+                if '[필수 키워드]' in parts:
+                    result['모범답안'] = parts.split('[필수 키워드]')[0].strip()
+                else:
+                    result['모범답안'] = parts.strip()
+
+            # [필수 키워드] 섹션 추출
+            if '[필수 키워드]' in content:
+                keywords_section = content.split('[필수 키워드]')[1]
+                if '[금지어]' in keywords_section:
+                    keywords_section = keywords_section.split('[금지어]')[0]
+                elif '[채점 팁]' in keywords_section:
+                    keywords_section = keywords_section.split('[채점 팁]')[0]
+
+                # 쉼표로 구분된 키워드 파싱
+                keywords_text = keywords_section.strip()
+                result['필수_키워드'] = [k.strip() for k in keywords_text.split(',') if k.strip()]
+
+            # [금지어] 섹션 추출
+            if '[금지어]' in content:
+                forbidden_section = content.split('[금지어]')[1]
+                if '[채점 팁]' in forbidden_section:
+                    forbidden_section = forbidden_section.split('[채점 팁]')[0]
+
+                forbidden_text = forbidden_section.strip()
+                result['금지어'] = [f.strip() for f in forbidden_text.split(',') if f.strip()]
+
+            # [채점 팁] 섹션 추출
+            if '[채점 팁]' in content:
+                tips_section = content.split('[채점 팁]')[1].strip()
+                # 각 줄을 팁으로 저장
+                result['채점_팁'] = [line.strip() for line in tips_section.split('\n') if line.strip() and line.strip().startswith('-')]
+
+            return result
+
+        except Exception as e:
+            print(f"[ERROR] 모범답안 파일 파싱 실패 ({filepath}): {e}")
+            return None
+
+    def find_matching_model_answer(self, problem_text: str) -> Optional[Dict]:
+        """문제지 내용으로 모범답안 찾기"""
+        if not problem_text or not self.model_answers:
+            return None
+
+        # 문제 텍스트 정규화
+        normalized_problem = problem_text.replace(' ', '').replace('\n', '').lower()
+
+        best_match = None
+        best_score = 0
+
+        for model_answer_data in self.model_answers:
+            score = 0
+            model_text = model_answer_data['모범답안']
+            normalized_model = model_text.replace(' ', '').replace('\n', '').lower()
+
+            # 제목이나 핵심 문구 매칭 (모범답안 첫 줄)
+            first_line = model_text.split('\n')[0] if '\n' in model_text else model_text[:50]
+            if first_line.replace(' ', '') in normalized_problem:
+                score += 50
+
+            # 키워드 매칭
+            keywords = model_answer_data['필수_키워드']
+            matched_keywords = 0
+            for keyword in keywords[:10]:  # 상위 10개만 체크
+                if keyword.replace(' ', '') in normalized_problem:
+                    matched_keywords += 1
+            score += matched_keywords * 3
+
+            # 모범답안 본문 일부가 문제지에 있는지
+            if len(normalized_model) > 100:
+                sample = normalized_model[:100]
+                if sample in normalized_problem:
+                    score += 30
+
+            if score > best_score:
+                best_score = score
+                best_match = model_answer_data
+
+        # 최소 점수 기준 (20점 이상)
+        if best_score >= 20:
+            print(f"[모범답안] 매칭 성공: {best_match.get('파일명', 'Unknown')} (신뢰도: {best_score})")
+            return best_match
+
+        print(f"[모범답안] 매칭 실패 (최고 점수: {best_score})")
+        return None
+
+
+# ============================================================================
 # 문제 데이터베이스 관리자
 # ============================================================================
 
@@ -927,10 +1057,13 @@ class OPRSystemGUI:
         self.basic_grader = BasicGrader()
         self.file_reader = FileReader()
 
-        # 문제 데이터베이스 및 PDF 생성기 초기화
+        # 모범답안 폴더 매니저 초기화 (가장 중요!)
+        self.model_answer_manager = ModelAnswerManager()
+
+        # 문제 데이터베이스 (레거시, 백업용)
         self.problem_db = ProblemDatabaseManager()
 
-        # PDF 생성기 초기화 (reportlab이 설치되어 있어야 함)
+        # PDF 생성기 초기화
         if PDF_GENERATOR_AVAILABLE:
             try:
                 self.pdf_generator = PDFGenerator()
@@ -1102,7 +1235,7 @@ class OPRSystemGUI:
         # 1. 문제지 업로드
         problem_frame = tk.LabelFrame(
             scrollable_frame,
-            text="1️⃣ 문제지 업로드 (AI가 자동으로 분석합니다)",
+            text="1️⃣ 문제지 업로드 (모범답안 폴더에서 자동 매칭)",
             font=("맑은 고딕", 11, "bold"),
             bg="white"
         )
@@ -1110,7 +1243,7 @@ class OPRSystemGUI:
 
         tk.Label(
             problem_frame,
-            text="💡 문제지를 업로드하면 AI가 자동으로 모범답안과 키워드를 생성합니다",
+            text="💡 문제지를 업로드하면 '모범답안/' 폴더에서 해당 모범답안을 자동으로 찾습니다",
             font=("맑은 고딕", 9),
             bg="white",
             fg="#27ae60"
@@ -1256,7 +1389,7 @@ class OPRSystemGUI:
         scrollbar.pack(side="right", fill="y")
 
     def select_problem_file(self):
-        """문제지 파일 선택 및 AI 자동 분석"""
+        """문제지 파일 선택 및 모범답안 폴더에서 매칭"""
         filename = filedialog.askopenfilename(
             title="문제지 파일 선택",
             filetypes=[
@@ -1280,80 +1413,16 @@ class OPRSystemGUI:
             messagebox.showerror("오류", "파일을 읽을 수 없습니다.")
             return
 
-        # 진행 창 표시
-        progress = tk.Toplevel(self.root)
-        progress.title("문제지 분석 중...")
-        progress.geometry("450x180")
-        progress.transient(self.root)
-        progress.grab_set()
+        # 모범답안 폴더에서 매칭되는 파일 찾기
+        matched_answer = self.model_answer_manager.find_matching_model_answer(content)
 
-        tk.Label(
-            progress,
-            text="🤖 AI가 문제지를 분석하고 있습니다...",
-            font=("맑은 고딕", 13, "bold"),
-            pady=20
-        ).pack()
-
-        tk.Label(
-            progress,
-            text=f"✓ 문제 이해 중\n✓ 모범답안 생성 중\n✓ 필수 키워드 추출 중",
-            font=("맑은 고딕", 10),
-            fg="#2c3e50",
-            justify=tk.LEFT
-        ).pack()
-
-        tk.Label(
-            progress,
-            text="20-40초 정도 소요됩니다...",
-            font=("맑은 고딕", 9),
-            fg="#7f8c8d"
-        ).pack(pady=10)
-
-        progress.update()
-
-        try:
-            # 먼저 DB에서 시도 (빠른 경로)
-            db_result = None
-            if self.problem_db and content:
-                db_result = self.problem_db.find_problem_by_content(content)
-
-            if db_result:
-                # DB에서 찾음
-                print("[INFO] DB에서 문제 발견, DB 데이터 사용")
-                model_answer = db_result.get('모범답안', '')
-                keywords = db_result.get('필수_키워드', [])
-                forbidden = db_result.get('금지어', [])
-                problem_title = db_result.get('제목', 'Unknown')
-
-            elif self.ai_available:
-                # AI로 분석
-                print("[INFO] DB에서 못 찾음, AI 자동 분석 시작")
-                ai_result = self.ai_client.analyze_problem_paper(content)
-
-                if "error" in ai_result:
-                    progress.destroy()
-                    messagebox.showerror(
-                        "AI 분석 실패",
-                        f"문제지 분석 중 오류가 발생했습니다:\n{ai_result['error']}\n\n"
-                        f"모범답안과 키워드를 직접 입력해주세요."
-                    )
-                    return
-
-                model_answer = ai_result.get('모범답안', '')
-                keywords = ai_result.get('필수_키워드', [])
-                forbidden = ai_result.get('금지어', [])
-                problem_title = ai_result.get('문제_제목', 'AI 분석 완료')
-
-            else:
-                # AI도 없음
-                progress.destroy()
-                messagebox.showwarning(
-                    "AI 미사용",
-                    "Gemini API가 활성화되지 않았습니다.\n\n"
-                    "자동 분석을 위해 API 키를 설정하거나\n"
-                    "모범답안과 키워드를 직접 입력해주세요."
-                )
-                return
+        if matched_answer:
+            # 매칭 성공!
+            model_answer = matched_answer.get('모범답안', '')
+            keywords = matched_answer.get('필수_키워드', [])
+            forbidden = matched_answer.get('금지어', [])
+            grading_tips = matched_answer.get('채점_팁', [])
+            filename_display = matched_answer.get('파일명', 'Unknown')
 
             # 모범답안 자동 입력
             self.model_answer_text.delete("1.0", tk.END)
@@ -1370,27 +1439,64 @@ class OPRSystemGUI:
                 self.forbidden_text.delete(0, tk.END)
                 self.forbidden_text.insert(0, forbidden_str)
 
-            progress.destroy()
-
             # 사용자에게 알림
+            tips_text = "\n".join(grading_tips[:3]) if grading_tips else "없음"
             messagebox.showinfo(
-                "✅ 문제지 분석 완료!",
-                f"문제지가 자동으로 분석되었습니다!\n\n"
-                f"📌 문제: {problem_title}\n"
+                "✅ 모범답안 찾기 완료!",
+                f"모범답안 파일을 찾았습니다!\n\n"
+                f"📌 파일: {filename_display}\n"
                 f"📋 필수 키워드: {len(keywords)}개\n"
                 f"⚠️ 금지어: {len(forbidden)}개\n"
-                f"📄 모범답안: 생성 완료\n\n"
+                f"💡 채점 팁:\n{tips_text}\n\n"
                 f"이제 답안지를 업로드하세요!"
             )
 
-        except Exception as e:
-            progress.destroy()
-            print(f"[ERROR] 문제지 분석 오류: {type(e).__name__}: {str(e)}")
-            messagebox.showerror(
-                "오류",
-                f"문제지 분석 중 오류가 발생했습니다:\n{str(e)}\n\n"
-                f"모범답안과 키워드를 직접 입력해주세요."
-            )
+        else:
+            # 매칭 실패 - DB에서 시도 (레거시)
+            db_result = None
+            if self.problem_db and content:
+                db_result = self.problem_db.find_problem_by_content(content)
+
+            if db_result:
+                print("[INFO] 모범답안 폴더에서 못 찾음, DB 데이터 사용")
+                model_answer = db_result.get('모범답안', '')
+                keywords = db_result.get('필수_키워드', [])
+                forbidden = db_result.get('금지어', [])
+                problem_title = db_result.get('제목', 'Unknown')
+
+                # 자동 입력
+                self.model_answer_text.delete("1.0", tk.END)
+                self.model_answer_text.insert("1.0", model_answer)
+
+                keywords_str = ', '.join(keywords)
+                self.keywords_text.delete("1.0", tk.END)
+                self.keywords_text.insert("1.0", keywords_str)
+
+                if forbidden:
+                    forbidden_str = ', '.join(forbidden)
+                    self.forbidden_text.delete(0, tk.END)
+                    self.forbidden_text.insert(0, forbidden_str)
+
+                messagebox.showinfo(
+                    "DB에서 찾기 완료",
+                    f"DB에서 문제를 찾았습니다.\n\n"
+                    f"📌 문제: {problem_title}\n"
+                    f"📋 필수 키워드: {len(keywords)}개\n\n"
+                    f"이제 답안지를 업로드하세요!"
+                )
+            else:
+                # 완전히 실패
+                messagebox.showwarning(
+                    "모범답안을 찾을 수 없습니다",
+                    f"모범답안 폴더와 DB에서 매칭되는 문제를 찾지 못했습니다.\n\n"
+                    f"해결 방법:\n"
+                    f"1. '모범답안/' 폴더에 해당 문제의 모범답안 파일을 추가하세요\n"
+                    f"2. 또는 아래 필드에 직접 입력하세요\n\n"
+                    f"모범답안 파일 형식:\n"
+                    f"[모범답안]\n답안 내용...\n\n"
+                    f"[필수 키워드]\n키워드1, 키워드2, ...\n\n"
+                    f"[금지어]\n금지어1, 금지어2, ..."
+                )
 
     def select_answer_file(self):
         """답안지 파일 선택"""
