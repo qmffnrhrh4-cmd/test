@@ -492,6 +492,100 @@ JSON만 출력하세요."""
             fallback_result["종합_평가"]["약점"].append(f"Gemini API 오류: {str(e)[:100]}")
             return fallback_result
 
+    def extract_keywords_from_multiple_answers(self, model_answers: List[str]) -> Dict:
+        """여러 개의 모범답안에서 공통 키워드와 금지어 추출"""
+
+        if not self.available:
+            return {
+                "error": "Gemini API를 사용할 수 없습니다.",
+                "필수_키워드": [],
+                "금지어": []
+            }
+
+        # 모범답안들을 하나의 텍스트로 합치기
+        combined_text = "\n\n===================\n\n".join(model_answers[:4])  # 최대 4개
+
+        prompt = f"""# 역할
+당신은 한국전력공사 OPR 시험 전문가입니다.
+여러 개의 모범답안을 분석하여 공통 필수 키워드와 금지어를 추출해야 합니다.
+
+# 모범답안들 (총 {len(model_answers)}개)
+{combined_text[:5000]}
+
+# 작업
+1. 위 모범답안들에서 반복적으로 나오는 핵심 키워드를 추출하세요
+2. 학생들이 사용하면 안 되는 금지어를 추출하세요
+
+# 필수 키워드 추출 기준
+- 모범답안들에서 공통적으로 나오는 핵심 개념, 용어
+- 기술명, 조직명, 정책명, 전문용어
+- 구체적인 수치, 날짜, 숫자
+- 최소 15개 이상, 최대 30개
+- **중요도가 높은 순서**로 정렬
+
+# 금지어 추출 기준
+- "~것 같습니다", "생각합니다", "추측컨대" 등 불확실한 표현
+- "아마도", "어쩌면", "혹시" 등 추정 표현
+- 모범답안에 없는 용어나 잘못된 표현
+- 5-10개
+
+# 출력 형식
+**반드시 아래 JSON 형식으로만 응답하세요.**
+
+```json
+{{
+  "필수_키워드": ["키워드1", "키워드2", "키워드3", "...최소 15개"],
+  "금지어": ["금지어1", "금지어2", "금지어3", "...5-10개"],
+  "분석_요약": "모범답안들의 공통 주제나 특징에 대한 간단한 설명"
+}}
+```
+
+JSON만 출력하세요."""
+
+        try:
+            print(f"[INFO] AI가 {len(model_answers)}개의 모범답안에서 키워드 추출 중...")
+            response = self.model.generate_content(prompt)
+            result_text = response.text.strip()
+
+            print(f"[DEBUG] AI 키워드 추출 응답 (처음 300자): {result_text[:300]}")
+
+            # JSON 추출
+            json_text = result_text
+            if "```json" in json_text:
+                json_text = json_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in json_text:
+                json_text = json_text.split("```")[1].split("```")[0].strip()
+            elif "{" in json_text and "}" in json_text:
+                start = json_text.find("{")
+                end = json_text.rfind("}") + 1
+                json_text = json_text[start:end]
+
+            result = json.loads(json_text)
+
+            # 필수 필드 확인
+            if "필수_키워드" not in result:
+                result["필수_키워드"] = []
+            if "금지어" not in result:
+                result["금지어"] = []
+
+            print(f"[INFO] 키워드 추출 완료 - 키워드: {len(result.get('필수_키워드', []))}개, 금지어: {len(result.get('금지어', []))}개")
+            return result
+
+        except json.JSONDecodeError as e:
+            print(f"[ERROR] JSON 파싱 오류: {e}")
+            return {
+                "error": f"JSON 파싱 오류: {str(e)}",
+                "필수_키워드": [],
+                "금지어": []
+            }
+        except Exception as e:
+            print(f"[ERROR] 키워드 추출 오류: {type(e).__name__}: {str(e)}")
+            return {
+                "error": f"키워드 추출 중 오류: {str(e)}",
+                "필수_키워드": [],
+                "금지어": []
+            }
+
     def analyze_problem_paper(self, problem_text: str) -> Dict:
         """문제지를 AI가 자동으로 분석하여 모범답안과 키워드 추출"""
 
@@ -1023,8 +1117,9 @@ class OPRSystemGUI:
             self.pdf_generator = None
 
         # 여러 모범답안 관리
-        self.loaded_model_answers = []  # 로드된 모범답안 리스트
-        self.current_model_answer_index = 0  # 현재 선택된 인덱스
+        self.model_answer_files = []  # 업로드된 모범답안 파일 경로 리스트 (최대 4개)
+        self.extracted_keywords = []  # AI가 추출한 키워드
+        self.extracted_forbidden = []  # AI가 추출한 금지어
 
     def create_widgets(self):
         """UI 구성"""
@@ -1161,7 +1256,7 @@ class OPRSystemGUI:
         label.pack(expand=True, pady=20, padx=20)
 
     def show_grading_panel(self):
-        """채점 패널"""
+        """채점 패널 - 새로운 플로우"""
         self.clear_panel()
 
         title = tk.Label(
@@ -1188,19 +1283,11 @@ class OPRSystemGUI:
         # 1. 문제지 업로드
         problem_frame = tk.LabelFrame(
             scrollable_frame,
-            text="1️⃣ 문제지 업로드 (모범답안 폴더에서 자동 매칭)",
+            text="1️⃣ 문제지 업로드",
             font=("맑은 고딕", 11, "bold"),
             bg="white"
         )
         problem_frame.pack(fill=tk.X, padx=10, pady=5)
-
-        tk.Label(
-            problem_frame,
-            text="💡 문제지를 업로드하면 '모범답안/' 폴더에서 해당 모범답안을 자동으로 찾습니다",
-            font=("맑은 고딕", 9),
-            bg="white",
-            fg="#27ae60"
-        ).pack(pady=3)
 
         self.problem_file_var = tk.StringVar(value="파일 없음")
         tk.Label(
@@ -1213,18 +1300,121 @@ class OPRSystemGUI:
 
         tk.Button(
             problem_frame,
-            text="📂 문제지 선택 (PDF/HWP/TXT)",
-            command=self.select_problem_file,
+            text="📂 문제지 선택 (PDF/TXT)",
+            command=self.select_problem_file_new,
             font=("맑은 고딕", 10, "bold"),
             bg="#9b59b6",
             fg="white",
             height=2
         ).pack(pady=5, padx=10, fill=tk.X)
 
-        # 2. 답안지 업로드
+        # 2. 모범답안 업로드 (최대 4개)
+        model_frame = tk.LabelFrame(
+            scrollable_frame,
+            text="2️⃣ 모범답안 업로드 (최대 4개)",
+            font=("맑은 고딕", 11, "bold"),
+            bg="white"
+        )
+        model_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        # 모범답안 파일 변수 초기화
+        self.model_file_vars = []
+        self.model_file_labels = []
+
+        for i in range(4):
+            frame = tk.Frame(model_frame, bg="white")
+            frame.pack(fill=tk.X, padx=5, pady=3)
+
+            var = tk.StringVar(value="파일 없음")
+            self.model_file_vars.append(var)
+
+            tk.Label(
+                frame,
+                text=f"모범답안 {i+1}:",
+                font=("맑은 고딕", 9, "bold"),
+                bg="white",
+                width=10
+            ).pack(side=tk.LEFT, padx=(0, 5))
+
+            label = tk.Label(
+                frame,
+                textvariable=var,
+                font=("맑은 고딕", 9),
+                bg="white",
+                fg="#7f8c8d",
+                anchor="w"
+            )
+            label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            self.model_file_labels.append(label)
+
+            tk.Button(
+                frame,
+                text="📂 선택",
+                command=lambda idx=i: self.select_model_answer_file(idx),
+                font=("맑은 고딕", 8),
+                bg="#3498db",
+                fg="white",
+                width=8
+            ).pack(side=tk.RIGHT, padx=2)
+
+        # "추출하기" 버튼
+        tk.Button(
+            model_frame,
+            text="🔍 키워드/금지어 추출하기 (AI)",
+            command=self.extract_keywords_from_models,
+            font=("맑은 고딕", 10, "bold"),
+            bg="#27ae60",
+            fg="white",
+            height=2
+        ).pack(pady=10, padx=10, fill=tk.X)
+
+        # 3. 추출된 키워드/금지어 (읽기 전용)
+        extracted_frame = tk.LabelFrame(
+            scrollable_frame,
+            text="3️⃣ 추출된 키워드 및 금지어 (AI 자동 추출)",
+            font=("맑은 고딕", 11, "bold"),
+            bg="white"
+        )
+        extracted_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        # 키워드
+        tk.Label(
+            extracted_frame,
+            text="📋 필수 키워드:",
+            font=("맑은 고딕", 9, "bold"),
+            bg="white"
+        ).pack(anchor="w", padx=5, pady=(5, 0))
+
+        self.keywords_text = scrolledtext.ScrolledText(
+            extracted_frame,
+            font=("맑은 고딕", 10),
+            wrap=tk.WORD,
+            height=4,
+            state="disabled"
+        )
+        self.keywords_text.pack(fill=tk.X, padx=5, pady=5)
+
+        # 금지어
+        tk.Label(
+            extracted_frame,
+            text="⚠️ 금지어:",
+            font=("맑은 고딕", 9, "bold"),
+            bg="white"
+        ).pack(anchor="w", padx=5, pady=(5, 0))
+
+        self.forbidden_text = scrolledtext.ScrolledText(
+            extracted_frame,
+            font=("맑은 고딕", 10),
+            wrap=tk.WORD,
+            height=2,
+            state="disabled"
+        )
+        self.forbidden_text.pack(fill=tk.X, padx=5, pady=5)
+
+        # 4. 답안지 업로드
         answer_frame = tk.LabelFrame(
             scrollable_frame,
-            text="2️⃣ 답안지 업로드 (PDF/HWP/TXT 첨부 또는 직접 입력)",
+            text="4️⃣ 답안지 업로드 (작성한 답안)",
             font=("맑은 고딕", 11, "bold"),
             bg="white"
         )
@@ -1241,7 +1431,7 @@ class OPRSystemGUI:
 
         tk.Button(
             answer_frame,
-            text="📂 답안지 선택",
+            text="📂 답안지 선택 (PDF/TXT)",
             command=self.select_answer_file,
             font=("맑은 고딕", 9),
             bg="#3498db",
@@ -1256,89 +1446,9 @@ class OPRSystemGUI:
         )
         self.answer_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        # 3. 모범답안
-        model_frame = tk.LabelFrame(
-            scrollable_frame,
-            text="3️⃣ 모범답안 (비교 기준 - 자동입력됨)",
-            font=("맑은 고딕", 11, "bold"),
-            bg="white"
-        )
-        model_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-
-        # 모범답안 선택 드롭다운
-        model_selector_frame = tk.Frame(model_frame, bg="white")
-        model_selector_frame.pack(fill=tk.X, padx=5, pady=(5, 0))
-
-        tk.Label(
-            model_selector_frame,
-            text="📚 모범답안 선택:",
-            font=("맑은 고딕", 10),
-            bg="white"
-        ).pack(side=tk.LEFT, padx=(0, 5))
-
-        self.model_answer_var = tk.StringVar(value="모범답안 없음")
-        self.model_answer_dropdown = ttk.Combobox(
-            model_selector_frame,
-            textvariable=self.model_answer_var,
-            state="readonly",
-            font=("맑은 고딕", 9),
-            width=60
-        )
-        self.model_answer_dropdown.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        self.model_answer_dropdown.bind("<<ComboboxSelected>>", self.on_model_answer_selected)
-
-        self.model_answer_text = scrolledtext.ScrolledText(
-            model_frame,
-            font=("맑은 고딕", 10),
-            wrap=tk.WORD,
-            height=6
-        )
-        self.model_answer_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-
-        # 4. 필수 키워드
-        keyword_frame = tk.LabelFrame(
-            scrollable_frame,
-            text="4️⃣ 필수 키워드 (쉼표로 구분 - 자동입력됨)",
-            font=("맑은 고딕", 11, "bold"),
-            bg="white"
-        )
-        keyword_frame.pack(fill=tk.X, padx=10, pady=5)
-
-        self.keywords_text = scrolledtext.ScrolledText(
-            keyword_frame,
-            font=("맑은 고딕", 10),
-            wrap=tk.WORD,
-            height=4
-        )
-        self.keywords_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-
-        # 5. 금지어
-        forbidden_frame = tk.LabelFrame(
-            scrollable_frame,
-            text="5️⃣ 금지어 (쉼표로 구분, 선택사항)",
-            font=("맑은 고딕", 11, "bold"),
-            bg="white"
-        )
-        forbidden_frame.pack(fill=tk.X, padx=10, pady=5)
-
-        self.forbidden_text = tk.Entry(
-            forbidden_frame,
-            font=("맑은 고딕", 10)
-        )
-        self.forbidden_text.pack(fill=tk.X, padx=5, pady=5)
-
-        # 버튼
+        # 5. 버튼
         btn_frame = tk.Frame(scrollable_frame, bg="white")
         btn_frame.pack(fill=tk.X, padx=10, pady=10)
-
-        tk.Button(
-            btn_frame,
-            text="📋 샘플 불러오기",
-            command=self.load_sample_with_criteria,
-            font=("맑은 고딕", 10),
-            bg="#95a5a6",
-            fg="white"
-        ).pack(side=tk.LEFT, padx=5)
 
         tk.Button(
             btn_frame,
@@ -1363,46 +1473,103 @@ class OPRSystemGUI:
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-    def on_model_answer_selected(self, event=None):
-        """드롭다운에서 모범답안 선택 시 호출"""
-        if not self.loaded_model_answers:
+    def select_problem_file_new(self):
+        """문제지 파일 선택 (새로운 플로우)"""
+        filename = filedialog.askopenfilename(
+            title="문제지 파일 선택",
+            filetypes=[
+                ("지원 파일", "*.pdf *.txt"),
+                ("PDF 파일", "*.pdf"),
+                ("텍스트 파일", "*.txt"),
+                ("모든 파일", "*.*")
+            ]
+        )
+
+        if filename:
+            self.problem_file_var.set(f"선택: {os.path.basename(filename)}")
+            messagebox.showinfo("문제지 로드 완료", f"문제지가 로드되었습니다:\n{os.path.basename(filename)}")
+
+    def select_model_answer_file(self, index: int):
+        """모범답안 파일 선택 (index: 0~3)"""
+        filename = filedialog.askopenfilename(
+            title=f"모범답안 {index+1} 선택",
+            filetypes=[
+                ("지원 파일", "*.pdf *.txt"),
+                ("PDF 파일", "*.pdf"),
+                ("텍스트 파일", "*.txt"),
+                ("모든 파일", "*.*")
+            ]
+        )
+
+        if filename:
+            # 리스트 크기 조정
+            while len(self.model_answer_files) <= index:
+                self.model_answer_files.append(None)
+
+            self.model_answer_files[index] = filename
+            self.model_file_vars[index].set(f"선택: {os.path.basename(filename)}")
+
+    def extract_keywords_from_models(self):
+        """AI로 모범답안들에서 키워드/금지어 추출"""
+        # 업로드된 모범답안 파일 개수 확인
+        valid_files = [f for f in self.model_answer_files if f is not None]
+
+        if not valid_files:
+            messagebox.showerror("오류", "최소 1개의 모범답안을 업로드하세요.")
             return
 
-        # 현재 선택된 인덱스 찾기
-        selected_text = self.model_answer_var.get()
-        for i, answer_data in enumerate(self.loaded_model_answers):
-            display_name = f"{i+1}. {answer_data.get('파일명', 'Unknown')}"
-            if selected_text == display_name:
-                self.current_model_answer_index = i
-                self.display_model_answer(i)
-                break
-
-    def display_model_answer(self, index: int):
-        """특정 인덱스의 모범답안을 화면에 표시"""
-        if index < 0 or index >= len(self.loaded_model_answers):
+        if not self.ai_available:
+            messagebox.showerror("오류", "AI 기능이 비활성화되어 있습니다.\nGemini API 키를 설정하세요.")
             return
 
-        answer_data = self.loaded_model_answers[index]
+        # 모범답안 파일 읽기
+        model_texts = []
+        for filepath in valid_files:
+            try:
+                content = self.file_reader.read_file(filepath)
+                if content:
+                    model_texts.append(content)
+            except Exception as e:
+                messagebox.showerror("오류", f"파일 읽기 실패:\n{os.path.basename(filepath)}\n{str(e)}")
+                return
 
-        # 모범답안 표시
-        model_answer = answer_data.get('모범답안', '')
-        self.model_answer_text.delete("1.0", tk.END)
-        self.model_answer_text.insert("1.0", model_answer)
+        if not model_texts:
+            messagebox.showerror("오류", "모범답안 파일을 읽을 수 없습니다.")
+            return
 
-        # 키워드 표시
-        keywords = answer_data.get('필수_키워드', [])
-        keywords_str = ', '.join(keywords)
-        self.keywords_text.delete("1.0", tk.END)
-        self.keywords_text.insert("1.0", keywords_str)
+        # AI에게 키워드 추출 요청
+        try:
+            messagebox.showinfo("처리 중", f"{len(model_texts)}개의 모범답안을 AI가 분석 중입니다...\n잠시만 기다려주세요.")
 
-        # 금지어 표시
-        forbidden = answer_data.get('금지어', [])
-        if forbidden:
-            forbidden_str = ', '.join(forbidden)
-            self.forbidden_text.delete(0, tk.END)
-            self.forbidden_text.insert(0, forbidden_str)
-        else:
-            self.forbidden_text.delete(0, tk.END)
+            result = self.ai_client.extract_keywords_from_multiple_answers(model_texts)
+
+            if result and "필수_키워드" in result:
+                self.extracted_keywords = result.get("필수_키워드", [])
+                self.extracted_forbidden = result.get("금지어", [])
+
+                # UI에 표시
+                self.keywords_text.config(state="normal")
+                self.keywords_text.delete("1.0", tk.END)
+                self.keywords_text.insert("1.0", ', '.join(self.extracted_keywords))
+                self.keywords_text.config(state="disabled")
+
+                self.forbidden_text.config(state="normal")
+                self.forbidden_text.delete("1.0", tk.END)
+                self.forbidden_text.insert("1.0", ', '.join(self.extracted_forbidden))
+                self.forbidden_text.config(state="disabled")
+
+                messagebox.showinfo(
+                    "추출 완료!",
+                    f"✅ 키워드 추출 완료!\n\n"
+                    f"📋 필수 키워드: {len(self.extracted_keywords)}개\n"
+                    f"⚠️ 금지어: {len(self.extracted_forbidden)}개\n\n"
+                    f"이제 답안지를 업로드하고 채점하세요!"
+                )
+            else:
+                messagebox.showerror("오류", "키워드 추출에 실패했습니다.")
+
+        except Exception as e:
+            messagebox.showerror("오류", f"AI 처리 중 오류 발생:\n{str(e)}")
 
     def select_problem_file(self):
         """문제지 파일 선택 및 모범답안 표시"""
@@ -1503,13 +1670,29 @@ class OPRSystemGUI:
             )
 
     def clear_all_inputs(self):
-        """전체 입력 지우기"""
+        """전체 입력 지우기 (새로운 플로우)"""
         self.answer_text.delete("1.0", tk.END)
-        self.model_answer_text.delete("1.0", tk.END)
+
+        # 키워드/금지어 초기화
+        self.keywords_text.config(state="normal")
         self.keywords_text.delete("1.0", tk.END)
-        self.forbidden_text.delete(0, tk.END)
+        self.keywords_text.config(state="disabled")
+
+        self.forbidden_text.config(state="normal")
+        self.forbidden_text.delete("1.0", tk.END)
+        self.forbidden_text.config(state="disabled")
+
+        # 파일 변수 초기화
         self.problem_file_var.set("파일 없음")
         self.answer_file_var.set("파일 없음")
+
+        for var in self.model_file_vars:
+            var.set("파일 없음")
+
+        # 데이터 초기화
+        self.model_answer_files = []
+        self.extracted_keywords = []
+        self.extracted_forbidden = []
 
     def load_sample_with_criteria(self):
         """샘플 + 채점기준 함께 불러오기"""
@@ -1582,32 +1765,46 @@ class OPRSystemGUI:
         messagebox.showinfo("샘플 로드 완료", "샘플 데이터가 모두 로드되었습니다.\n이제 'AI 채점 시작' 버튼을 눌러보세요!")
 
     def grade_answer_ai(self):
-        """AI 채점 실행"""
+        """AI 채점 실행 (새로운 플로우)"""
         answer = self.answer_text.get("1.0", tk.END).strip()
-        model_answer = self.model_answer_text.get("1.0", tk.END).strip()
-        keywords_raw = self.keywords_text.get("1.0", tk.END).strip()
-        forbidden_raw = self.forbidden_text.get().strip()
 
         # 유효성 검사
         if not answer:
             messagebox.showwarning("경고", "학생 답안을 입력하세요.")
             return
 
-        if not model_answer:
-            messagebox.showwarning("경고", "모범답안을 입력하세요.")
+        # 추출된 키워드 사용
+        if not self.extracted_keywords:
+            messagebox.showwarning("경고", "먼저 '키워드/금지어 추출하기' 버튼을 클릭하세요.")
             return
 
-        if not keywords_raw:
-            messagebox.showwarning("경고", "필수 키워드를 입력하세요.")
+        keywords = self.extracted_keywords
+        forbidden = self.extracted_forbidden
+
+        # 모범답안 파일들의 내용을 하나로 합치기
+        valid_files = [f for f in self.model_answer_files if f is not None]
+
+        if not valid_files:
+            messagebox.showwarning("경고", "최소 1개의 모범답안을 업로드하세요.")
             return
 
-        # 키워드 파싱 (쉼표로 구분)
-        keywords = [k.strip() for k in keywords_raw.split(",") if k.strip()]
-        forbidden = [f.strip() for f in forbidden_raw.split(",") if f.strip()] if forbidden_raw else []
+        # 모범답안 파일 읽기 및 합치기
+        model_texts = []
+        for filepath in valid_files:
+            try:
+                content = self.file_reader.read_file(filepath)
+                if content:
+                    model_texts.append(content)
+            except Exception as e:
+                messagebox.showerror("오류", f"모범답안 파일 읽기 실패:\n{os.path.basename(filepath)}\n{str(e)}")
+                return
 
-        if not keywords:
-            messagebox.showwarning("경고", "최소 1개 이상의 키워드를 입력하세요.")
+        if not model_texts:
+            messagebox.showerror("오류", "모범답안 파일을 읽을 수 없습니다.")
             return
+
+        # 여러 모범답안을 하나로 합치기 (AI가 비교할 수 있도록)
+        model_answer = "\n\n[다른 모범답안]\n\n".join(model_texts)
 
         # 진행 창
         progress = tk.Toplevel(self.root)
